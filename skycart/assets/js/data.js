@@ -165,6 +165,36 @@ const DB = (() => {
     get raw() { return db; },
     save,
     reset() { db = JSON.parse(JSON.stringify(SEED)); save(); },
+    /* Pull the live catalogue from Supabase. Returns true when Supabase data is
+       in use; on any failure (or an empty table) the local seed keeps working. */
+    async loadRemote() {
+      try {
+        if (typeof supabaseClient === 'undefined') return false;
+        const sb = supabaseClient;
+        const [cats, prods, servs, crs, revs] = await Promise.all([
+          sb.from('categories').select('id,name,slug,blurb,image,sort_order,is_featured').order('sort_order'),
+          sb.from('products').select('id,title,slug,category_id,price_inr,discount_price_inr,short_description,description,specs,images,fulfillment_type,stock_qty,is_bestseller,is_active,is_bundle,bundle_includes,sales_count,created_at'),
+          sb.from('services').select('id,title,description,category,is_active'),
+          sb.from('courses').select('id,title,slug,type,price_inr,description,thumbnail,external_url,level,hours,is_active,lessons(id,title,duration,order_index)'),
+          sb.from('reviews').select('id,product_id,course_id,user_name,rating,comment,is_approved,created_at')
+        ]);
+        if ([cats, prods, servs, crs, revs].some(r => r.error)) return false;
+        if (!prods.data.length) return false;
+        db = {
+          categories: cats.data,
+          products: prods.data.map(x => ({ ...x, specs: x.specs || [], images: x.images || [] })),
+          services: servs.data,
+          courses: crs.data.map(c => ({
+            ...c, hours: c.hours == null ? null : Number(c.hours),
+            lessons: (c.lessons || []).slice().sort((a, b) => a.order_index - b.order_index)
+          })),
+          reviews: revs.data,
+          settings: db.settings || SEED.settings
+        };
+        save();
+        return true;
+      } catch (e) { return false; }
+    },
     products: () => db.products,
     activeProducts: () => db.products.filter(x => x.is_active),
     product: id => db.products.find(x => x.id === id),

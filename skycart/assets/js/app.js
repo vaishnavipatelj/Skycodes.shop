@@ -1259,6 +1259,14 @@ function wireGlobal() {
 /* ---------------- boot ---------------- */
 async function start() {
   store.load();
+  /* Catalogue comes from Supabase when it has products, else the local seed.
+     Ids change from 'p1'-style to UUIDs, so clear old demo cart/orders once. */
+  const live = await DB.loadRemote();
+  if (live && store.data.catalogSource !== 'supabase') {
+    store.data.cart = []; store.data.wishlist = []; store.data.orders = []; store.data.enrollments = {};
+    store.data.catalogSource = 'supabase';
+    store.save();
+  }
   await syncUserFromSession();
   paintCounters();
   wireGlobal();
