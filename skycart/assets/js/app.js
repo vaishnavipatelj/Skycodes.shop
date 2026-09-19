@@ -30,6 +30,43 @@ function toast(msg, kind = '') {
   setTimeout(() => t.remove(), 3100);
 }
 
+/* ---------------- backend (Supabase auth + serverless API) ---------------- */
+async function getAccessToken() {
+  const { data } = await supabaseClient.auth.getSession();
+  return data.session ? data.session.access_token : null;
+}
+
+/* Calls one of our /api routes with the signed-in user's token attached.
+   Throws with a readable message on failure so callers can toast() it. */
+async function api(path, body) {
+  const token = await getAccessToken();
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: 'Bearer ' + token } : {})
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Something went wrong');
+  return data;
+}
+
+/* Keeps store.data.user (used everywhere for display) in sync with the
+   real Supabase session. Call once on boot and after sign-in/out. */
+async function syncUserFromSession() {
+  const { data } = await supabaseClient.auth.getSession();
+  const u = data.session ? data.session.user : null;
+  store.data.user = u ? {
+    id: u.id,
+    name: (u.user_metadata && u.user_metadata.name) || u.email.split('@')[0],
+    email: u.email,
+    address: (u.user_metadata && u.user_metadata.address) || ''
+  } : null;
+  store.save();
+}
+
 /* ---------------- state (persisted) ---------------- */
 const store = {
   key: 'skycodes.state.v1',
@@ -777,7 +814,7 @@ function openAuth() {
       <div class="field"><label><small>Password</small><input type="password" name="password" required placeholder="••••••••" /></label></div>
       <button class="btn btn-primary btn-block" type="submit">Continue</button>
     </form>
-    <p style="color:var(--muted-2);font-size:.8rem;margin:16px 0 0">Demo build: accounts are stored in this browser only. Swap in Supabase Auth to go live.</p>`);
+    <p style="color:var(--muted-2);font-size:.8rem;margin:16px 0 0">New here? Just fill this in — an account is created automatically.</p>`);
 }
 
 function openQuote(serviceId) {
@@ -796,50 +833,86 @@ function openQuote(serviceId) {
     </form>`);
 }
 
-/* checkout: mock Razorpay, then fulfil exactly the way the webhook will */
-function checkout() {
+/* checkout: price is recomputed server-side in /api/checkout/create-order,
+   Razorpay's modal opens with the real order it returns, and only the
+   verified webhook (api/webhooks/razorpay.js) ever marks the order paid or
+   grants access. This function never writes an order or an enrollment. */
+async function checkout() {
   if (!store.data.cart.length) return;
   if (!store.data.user) { openAuth(); toast('Sign in first so we know where to send the files'); return; }
+
+  const items = store.data.cart.map(l => ({ id: l.id, kind: l.kind, qty: l.qty }));
   const lines = store.data.cart.map(l => {
     const item = l.kind === 'course' ? DB.course(l.id) : DB.product(l.id);
-    return { id: item.id, kind: l.kind, title: item.title, qty: l.qty, unit: l.kind === 'course' ? item.price_inr : price(item) };
+    return { title: item.title, qty: l.qty, unit: l.kind === 'course' ? item.price_inr : price(item) };
   });
   const total = lines.reduce((s, i) => s + i.unit * i.qty, 0);
+
   openModal(`
     <h3>Confirm and pay</h3>
-    <p class="muted">Server-side price check passed. Razorpay would open here.</p>
+    <p class="muted">Total is verified against the database before payment opens.</p>
     ${lines.map(i => `<div style="display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line)">
       <span>${esc(i.title)} ${i.qty > 1 ? `× ${i.qty}` : ''}</span><strong>${money(i.unit * i.qty)}</strong></div>`).join('')}
     <div class="total-row" style="margin-top:18px"><span>Total</span><span>${money(total)}</span></div>
     <button class="btn btn-primary btn-block" data-act="pay">Pay ${money(total)}</button>
-    <p style="color:var(--muted-2);font-size:.8rem;margin:14px 0 0">Demo build: no money moves. Wire /api/checkout/create-order and the Razorpay webhook to make it real.</p>`);
+    <p style="color:var(--muted-2);font-size:.8rem;margin:14px 0 0">Secured by Razorpay.</p>`);
 
-  $('#modal').dataset.total = total;
-  $('#modal').dataset.lines = JSON.stringify(lines);
+  $('#modal').dataset.items = JSON.stringify(items);
 }
 
-function fulfil() {
-  const lines = JSON.parse($('#modal').dataset.lines);
-  const total = +$('#modal').dataset.total;
-  const order = { id: 'SC' + Date.now().toString().slice(-8), items: lines, total, created_at: new Date().toISOString(), status: 'paid' };
-  store.data.orders.push(order);
-  lines.filter(l => l.kind === 'course').forEach(l => {
-    const c = DB.course(l.id);
-    store.data.enrollments[l.id] = { completed: [], current: c.lessons[0] ? c.lessons[0].id : null, at: Date.now() };
+async function pay() {
+  const items = JSON.parse($('#modal').dataset.items || '[]');
+  const payBtn = $('[data-act="pay"]');
+  if (payBtn) { payBtn.disabled = true; payBtn.textContent = 'Preparing payment…'; }
+
+  let order;
+  try {
+    order = await api('/api/checkout/create-order', { items });
+  } catch (err) {
+    toast(err.message || 'Could not start checkout', 'err');
+    if (payBtn) { payBtn.disabled = false; payBtn.textContent = 'Try again'; }
+    return;
+  }
+
+  const rzp = new Razorpay({
+    key: order.key,
+    order_id: order.order_id,
+    amount: order.amount,
+    currency: order.currency,
+    name: 'SkyCodes.Shop',
+    prefill: { name: store.data.user.name, email: store.data.user.email },
+    theme: { color: '#1e6fff' },
+    handler: function () {
+      // The webhook does the real work (verifying the signature, marking the
+      // order paid, granting access). This only tells the shopper it's on
+      // its way — never grant access from this callback.
+      store.data.cart = [];
+      store.save();
+      closeAll();
+      toast('Payment received — confirming with the server, this takes a few seconds', 'ok');
+      setTimeout(() => go('#/account?tab=downloads'), 1500);
+    },
+    modal: {
+      ondismiss: function () {
+        if (payBtn) { payBtn.disabled = false; payBtn.textContent = 'Try again'; }
+      }
+    }
   });
-  store.data.cart = [];
-  store.save();
-  closeAll();
-  toast(`Payment confirmed. Order ${order.id} — download links sent to ${store.data.user.email}`, 'ok');
-  go('#/account?tab=downloads');
+  rzp.open();
 }
 
-function enrol(courseId) {
+async function enrol(courseId) {
   const c = DB.course(courseId);
   if (!store.data.user) { openAuth(); toast('Sign in to enrol'); return; }
   if (c.type === 'paid' && !enrolled(c.id)) { addToCart(c.id, 'course', true); checkout(); return; }
-  store.data.enrollments[c.id] = { completed: [], current: c.lessons[0].id, at: Date.now() };
-  store.save(); go(`#/course/${c.slug}/learn`);
+  try {
+    await api('/api/enroll/free', { courseId: c.id });
+    store.data.enrollments[c.id] = { completed: [], current: c.lessons[0].id, at: Date.now() };
+    store.save();
+    go(`#/course/${c.slug}/learn`);
+  } catch (err) {
+    toast(err.message || 'Could not enrol', 'err');
+  }
 }
 
 /* certificate as a downloadable PNG */
@@ -1060,14 +1133,22 @@ function wireGlobal() {
       'qty+': () => setQty(id, 1),
       'qty-': () => setQty(id, -1),
       checkout: () => { closeAll(); checkout(); },
-      pay: () => fulfil(),
+      pay: () => pay(),
       auth: () => openAuth(),
-      signout: () => { store.data.user = null; store.save(); toast('Signed out'); go('#/'); },
+      signout: () => { supabaseClient.auth.signOut(); store.data.user = null; store.save(); toast('Signed out'); go('#/'); },
       quote: () => openQuote(id),
       enroll: () => enrol(id),
       tab: () => go('#/account?tab=' + id),
       certificate: () => certificate(id),
-      download: () => toast('Signed link generated — valid 15 minutes (demo build, no file attached)', 'ok'),
+      download: async () => {
+        try {
+          const res = await api('/api/downloads/' + id);
+          toast('Download link ready — opening now (valid 15 minutes)', 'ok');
+          window.open(res.url, '_blank');
+        } catch (err) {
+          toast(err.message || 'Could not get the download link', 'err');
+        }
+      },
       'clear-filters': () => go('#/products'),
       complete: () => {
         const en = store.data.enrollments[id];
@@ -1120,7 +1201,7 @@ function wireGlobal() {
   });
 
   /* forms */
-  document.addEventListener('submit', e => {
+  document.addEventListener('submit', async e => {
     const form = e.target.closest('[data-act]');
     if (!form) return;
     e.preventDefault();
@@ -1128,8 +1209,28 @@ function wireGlobal() {
     const act = form.dataset.act;
 
     if (act === 'auth-form') {
-      store.data.user = { name: d.name, email: d.email, address: '' };
-      store.save(); closeAll(); toast(`Welcome, ${d.name.split(' ')[0]}`, 'ok'); go('#/account');
+      const btn = form.querySelector('button[type="submit"]');
+      if (btn) { btn.disabled = true; btn.textContent = 'Please wait…'; }
+
+      // Try signing in first; if that account doesn't exist yet, create it.
+      let { error } = await supabaseClient.auth.signInWithPassword({ email: d.email, password: d.password });
+      if (error) {
+        const signUpRes = await supabaseClient.auth.signUp({
+          email: d.email,
+          password: d.password,
+          options: { data: { name: d.name } }
+        });
+        error = signUpRes.error;
+      }
+
+      if (btn) { btn.disabled = false; btn.textContent = 'Continue'; }
+
+      if (error) { toast(error.message, 'err'); return; }
+
+      await syncUserFromSession();
+      closeAll();
+      toast(`Welcome, ${store.data.user.name.split(' ')[0]}`, 'ok');
+      go('#/account');
     }
     if (act === 'profile-form') {
       Object.assign(store.data.user, d); store.save(); toast('Profile saved', 'ok');
@@ -1156,12 +1257,20 @@ function wireGlobal() {
 }
 
 /* ---------------- boot ---------------- */
-function start() {
+async function start() {
   store.load();
+  await syncUserFromSession();
   paintCounters();
   wireGlobal();
   render();
   paintBuyBar();
+
+  // Keep store.data.user in sync if the session changes in another tab,
+  // or expires/refreshes.
+  supabaseClient.auth.onAuthStateChange(async () => {
+    await syncUserFromSession();
+    render();
+  });
 }
 
 return { start, go, toast, art, money, esc, initials, store, openModal, closeAll, render, $, $$, price };
