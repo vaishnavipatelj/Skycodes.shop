@@ -46,17 +46,19 @@ async function getAccessToken() {
 }
 
 /* Calls one of our /api routes with the signed-in user's token attached.
-   Throws with a readable message on failure so callers can toast() it. */
-async function api(path, body) {
+   method defaults to POST when a body is given (matches every storefront
+   call site); admin.js passes an explicit method for GET/PATCH/DELETE. */
+async function api(path, body, method) {
   const token = await getAccessToken();
-  const res = await fetch(path, {
-    method: 'POST',
+  const opts = {
+    method: method || 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...(token ? { Authorization: 'Bearer ' + token } : {})
-    },
-    body: body ? JSON.stringify(body) : undefined
-  });
+    }
+  };
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  const res = await fetch(path, opts);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Something went wrong');
   return data;
@@ -1341,5 +1343,5 @@ async function start() {
   });
 }
 
-return { start, go, toast, art, money, esc, initials, store, openModal, closeAll, render, $, $$, price };
+return { start, go, toast, art, money, esc, initials, store, openModal, closeAll, render, $, $$, price, api };
 })();
