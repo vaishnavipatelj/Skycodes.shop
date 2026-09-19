@@ -22,7 +22,7 @@ function art(seed) {
 const imgOf = it => (it && ((Array.isArray(it.images) && it.images[0]) || it.thumbnail)) || null;
 function cover(it, seed) {
   const u = imgOf(it);
-  return u ? `background:#0a1226 url('${encodeURI(u).replace(/'/g, '%27')}') center/cover no-repeat` : art(seed);
+  return u ? `background:#0a1226 url('${String(u).trim().replace(/'/g, '%27').replace(/"/g, '%22')}') center/cover no-repeat` : art(seed);
 }
 const price = p => p.discount_price_inr || p.price_inr;
 const stars = n => '★★★★★'.slice(0, n) + '☆☆☆☆☆'.slice(0, 5 - n);
