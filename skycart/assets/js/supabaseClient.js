@@ -5,5 +5,5 @@
 
 const supabaseClient = window.supabase.createClient(
   'https://wtybltozcmjxnqmwisce.supabase.co',
-  'PASTE_YOUR_ANON_PUBLISHABLE_KEY_HERE'
+  'sb_publishable_nKX2m9qpDl78Bh5MfvyNWg_uOEQgI5Z'
 );
