@@ -18,6 +18,12 @@ function art(seed) {
   const s = 58 + (h % 24);
   return `background:linear-gradient(${ang}deg,hsl(${a} ${s}% 58%) 0%,hsl(${b} 72% 31%) 46%,hsl(${b} 64% 8%) 100%)`;
 }
+/* Real image (Supabase products.images[0] / courses.thumbnail) when present, else the generated art. */
+const imgOf = it => (it && ((Array.isArray(it.images) && it.images[0]) || it.thumbnail)) || null;
+function cover(it, seed) {
+  const u = imgOf(it);
+  return u ? `background:#0a1226 url('${encodeURI(u).replace(/'/g, '%27')}') center/cover no-repeat` : art(seed);
+}
 const price = p => p.discount_price_inr || p.price_inr;
 const stars = n => '★★★★★'.slice(0, n) + '☆☆☆☆☆'.slice(0, 5 - n);
 
@@ -126,8 +132,8 @@ function productCard(p) {
     <button class="wish ${wished ? 'on' : ''}" data-wish="${p.id}" data-act="wish" data-id="${p.id}" aria-label="Save ${esc(p.title)}">
       <svg viewBox="0 0 24 24" fill="${wished ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><path d="M12 20s-7-4.4-7-9a4 4 0 0 1 7-2.6A4 4 0 0 1 19 11c0 4.6-7 9-7 9Z"/></svg>
     </button>
-    <div class="thumb" style="${art(p.id + p.title)}" data-act="open" data-id="${p.id}">
-      <span class="thumb-mono">${initials(p.title)}</span>
+    <div class="thumb" style="${cover(p, p.id + p.title)}" data-act="open" data-id="${p.id}">
+      ${imgOf(p) ? '' : `<span class="thumb-mono">${initials(p.title)}</span>`}
       <span class="thumb-tag">${esc(cat ? cat.name : 'Digital')}</span>
     </div>
     <div class="card-body">
@@ -147,7 +153,7 @@ function productCard(p) {
 function courseCard(c) {
   return `
   <article class="course-card reveal">
-    <div class="course-thumb" style="${art(c.id + c.title)}" data-act="course" data-id="${c.slug}">
+    <div class="course-thumb" style="${cover(c, c.id + c.title)}" data-act="course" data-id="${c.slug}">
       <span class="play"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span>
     </div>
     <div class="body">
@@ -364,8 +370,8 @@ pages.product = slug => {
     <p class="crumbs"><a href="#/">Home</a> / <a href="#/products">Products</a> / <a href="#/products?cat=${p.category_id}">${esc(cat.name)}</a></p>
     <div class="detail">
       <div>
-        <div class="detail-art" style="${art(p.id + p.title)}">
-          <span class="thumb-mono">${initials(p.title)}</span>
+        <div class="detail-art" style="${cover(p, p.id + p.title)}">
+          ${imgOf(p) ? '' : `<span class="thumb-mono">${initials(p.title)}</span>`}
           <span class="thumb-tag">${esc(cat.name)} · instant download</span>
         </div>
         ${inc.length ? `<div style="margin-top:22px">
@@ -470,7 +476,7 @@ pages.course = slug => {
     <p class="crumbs"><a href="#/">Home</a> / <a href="#/courses">Courses</a> / ${esc(c.title)}</p>
     <div class="detail">
       <div>
-        <div class="detail-art" style="${art(c.id + c.title)}">
+        <div class="detail-art" style="${cover(c, c.id + c.title)}">
           <span class="play"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span>
         </div>
         ${c.lessons.length ? `<h3 style="margin:28px 0 14px">Curriculum · ${c.lessons.length} lessons</h3>
@@ -645,7 +651,7 @@ pages.account = (q) => {
     courses: () => myCourses.length ? `<div class="course-grid">${myCourses.map(c => {
       const en = store.data.enrollments[c.id];
       const pct = Math.round(en.completed.length / Math.max(c.lessons.length, 1) * 100);
-      return `<div class="course-card"><div class="course-thumb" style="${art(c.id + c.title)}"><span class="play">
+      return `<div class="course-card"><div class="course-thumb" style="${cover(c, c.id + c.title)}"><span class="play">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></span></div>
         <div class="body"><h3 style="margin-bottom:10px">${esc(c.title)}</h3>
         <div class="bar" style="margin-bottom:8px"><i style="width:${pct}%"></i></div>
@@ -758,7 +764,7 @@ function renderDrawer(kind) {
     const items = store.data.wishlist.map(DB.product).filter(Boolean);
     body.innerHTML = items.length ? items.map(p => `
       <div class="cart-line">
-        <div class="art" style="${art(p.id + p.title)}">${initials(p.title)}</div>
+        <div class="art" style="${cover(p, p.id + p.title)}">${imgOf(p) ? '' : initials(p.title)}</div>
         <div><h4 data-act="open" data-id="${p.id}" style="cursor:pointer">${esc(p.title)}</h4>
           <small style="color:var(--muted)">${money(price(p))}</small>
           <div class="qty"><button class="mini" data-act="add" data-id="${p.id}">Add to cart</button></div></div>
@@ -776,7 +782,7 @@ function renderDrawer(kind) {
   const total = lines.reduce((s, x) => s + x.unit * x.l.qty, 0);
   body.innerHTML = lines.length ? lines.map(({ l, item, unit }) => `
     <div class="cart-line">
-      <div class="art" style="${art(item.id + item.title)}">${initials(item.title)}</div>
+      <div class="art" style="${cover(item, item.id + item.title)}">${imgOf(item) ? '' : initials(item.title)}</div>
       <div>
         <h4>${esc(item.title)}</h4>
         <small style="color:var(--muted)">${l.kind === 'course' ? 'Course enrolment' : 'Instant download'}</small>
