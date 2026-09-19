@@ -14,12 +14,6 @@
 const crypto = require('crypto');
 const { supabaseAdmin } = require('../_lib/supabaseAdmin');
 
-// Vercel: turn off automatic body parsing so we can verify the RAW body
-// against the signature header. A re-serialized JSON body will not match.
-module.exports.config = {
-  api: { bodyParser: false },
-};
-
 function readRawBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -35,16 +29,25 @@ module.exports = async (req, res) => {
     return res.status(405).end();
   }
 
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  if (!secret) {
+    console.error('RAZORPAY_WEBHOOK_SECRET is not set');
+    return res.status(500).json({ error: 'Webhook not configured' });
+  }
+
   const rawBody = await readRawBody(req);
   const signature = req.headers['x-razorpay-signature'];
-  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
 
   const expectedSignature = crypto
     .createHmac('sha256', secret)
     .update(rawBody)
     .digest('hex');
 
-  if (!signature || signature !== expectedSignature) {
+  const sigOk = typeof signature === 'string' &&
+    signature.length === expectedSignature.length &&
+    crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature));
+
+  if (!sigOk) {
     console.warn('Razorpay webhook: signature mismatch');
     return res.status(400).json({ error: 'Invalid signature' });
   }
@@ -108,4 +111,11 @@ module.exports = async (req, res) => {
     // Return 500 so Razorpay retries — safe because every step above is idempotent.
     return res.status(500).json({ error: 'Processing failed' });
   }
+};
+
+// Vercel: turn off automatic body parsing so we can verify the RAW body
+// against the signature header. A re-serialized JSON body will not match.
+// This MUST come after module.exports = ... or it gets overwritten.
+module.exports.config = {
+  api: { bodyParser: false },
 };

@@ -897,6 +897,7 @@ async function pay() {
       closeAll();
       toast('Payment received — confirming with the server, this takes a few seconds', 'ok');
       setTimeout(() => go('#/account?tab=downloads'), 1500);
+      waitForPaid();
     },
     modal: {
       ondismiss: function () {
@@ -913,7 +914,7 @@ async function enrol(courseId) {
   if (c.type === 'paid' && !enrolled(c.id)) { addToCart(c.id, 'course', true); checkout(); return; }
   try {
     await api('/api/enroll/free', { courseId: c.id });
-    store.data.enrollments[c.id] = { completed: [], current: c.lessons[0].id, at: Date.now() };
+    store.data.enrollments[c.id] = { completed: [], current: c.lessons[0] ? c.lessons[0].id : null, at: Date.now() };
     store.save();
     go(`#/course/${c.slug}/learn`);
   } catch (err) {
@@ -1141,7 +1142,7 @@ function wireGlobal() {
       checkout: () => { closeAll(); checkout(); },
       pay: () => pay(),
       auth: () => openAuth(),
-      signout: () => { supabaseClient.auth.signOut(); store.data.user = null; store.save(); toast('Signed out'); go('#/'); },
+      signout: () => { supabaseClient.auth.signOut(); store.data.user = null; store.data.orders = []; store.data.enrollments = {}; store.save(); toast('Signed out'); go('#/'); },
       quote: () => openQuote(id),
       enroll: () => enrol(id),
       tab: () => go('#/account?tab=' + id),
@@ -1262,6 +1263,44 @@ function wireGlobal() {
   });
 }
 
+/* Pull the signed-in user's real (webhook-confirmed) orders and enrollments from
+   Supabase. RLS lets a user read only their own rows. Only used once the
+   catalogue itself comes from Supabase, so the ids line up. */
+async function syncAccount() {
+  if (store.data.catalogSource !== 'supabase') return;
+  if (!store.data.user) { store.data.orders = []; store.data.enrollments = {}; store.save(); return; }
+  try {
+    const [o, e] = await Promise.all([
+      supabaseClient.from('orders').select('id,items,total_inr,status,created_at').eq('status', 'paid').order('created_at'),
+      supabaseClient.from('enrollments').select('course_id,enrolled_at')
+    ]);
+    if (!o.error) {
+      store.data.orders = o.data.map(r => ({ id: String(r.id).slice(0, 8).toUpperCase(), items: r.items || [], total: r.total_inr, created_at: r.created_at }));
+    }
+    if (!e.error) {
+      const next = {};
+      e.data.forEach(r => {
+        const c = DB.course(r.course_id);
+        const prev = store.data.enrollments[r.course_id];
+        next[r.course_id] = prev || { completed: [], current: c && c.lessons[0] ? c.lessons[0].id : null, at: Date.parse(r.enrolled_at) || Date.now() };
+      });
+      store.data.enrollments = next;
+    }
+    store.save();
+  } catch (err) { /* keep whatever we had */ }
+}
+
+/* After Razorpay's modal closes, the webhook needs a few seconds to mark the order paid. */
+async function waitForPaid(tries = 8) {
+  for (let i = 0; i < tries; i++) {
+    const before = store.data.orders.length;
+    await syncAccount();
+    if (store.data.orders.length > before) { render(); toast('Payment confirmed — your files are ready', 'ok'); return; }
+    await new Promise(r => setTimeout(r, 2500));
+  }
+  toast('Still confirming your payment. Refresh in a minute; if nothing shows, contact support.', 'ok');
+}
+
 /* ---------------- boot ---------------- */
 async function start() {
   store.load();
@@ -1274,6 +1313,7 @@ async function start() {
     store.save();
   }
   await syncUserFromSession();
+  await syncAccount();
   paintCounters();
   wireGlobal();
   render();
@@ -1283,6 +1323,7 @@ async function start() {
   // or expires/refreshes.
   supabaseClient.auth.onAuthStateChange(async () => {
     await syncUserFromSession();
+    await syncAccount();
     render();
   });
 }
