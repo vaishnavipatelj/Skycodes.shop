@@ -23,31 +23,39 @@ module.exports = async (req, res) => {
   if (!productId) return res.status(400).json({ error: 'Missing productId' });
 
   try {
-    // Ownership check: does the user have a paid order containing this product?
-    const { data: orders, error: ordersErr } = await supabaseAdmin
-      .from('orders')
-      .select('id, items, status')
-      .eq('user_id', user.id)
-      .eq('status', 'paid');
-
-    if (ordersErr) throw ordersErr;
-
-    const owns = (orders || []).some((o) =>
-      (o.items || []).some((line) => line.kind === 'product' && line.id === productId)
-    );
-
-    if (!owns) {
-      return res.status(403).json({ error: 'You have not purchased this product' });
-    }
-
     const { data: product, error: productErr } = await supabaseAdmin
       .from('products')
-      .select('file_path, title')
+      .select('file_path, title, price_inr, discount_price_inr, is_active, is_bundle')
       .eq('id', productId)
       .single();
 
     if (productErr || !product || !product.file_path) {
       return res.status(404).json({ error: 'File not found for this product' });
+    }
+
+    // A product priced at 0 is a free download: signed-in users only, no order needed.
+    const unitPrice = product.discount_price_inr || product.price_inr;
+    const isFree = !product.is_bundle && unitPrice === 0;
+    // Free files must be live; a paid buyer keeps access even if the product is later hidden.
+    if (isFree && !product.is_active) return res.status(404).json({ error: 'File not found for this product' });
+
+    if (!isFree) {
+      // Ownership check: does the user have a paid order containing this product?
+      const { data: orders, error: ordersErr } = await supabaseAdmin
+        .from('orders')
+        .select('id, items, status')
+        .eq('user_id', user.id)
+        .eq('status', 'paid');
+
+      if (ordersErr) throw ordersErr;
+
+      const owns = (orders || []).some((o) =>
+        (o.items || []).some((line) => line.kind === 'product' && line.id === productId)
+      );
+
+      if (!owns) {
+        return res.status(403).json({ error: 'You have not purchased this product' });
+      }
     }
 
     const { data: signed, error: signErr } = await supabaseAdmin

@@ -25,6 +25,9 @@ function cover(it, seed) {
   return u ? `background:#0a1226 url('${String(u).trim().replace(/'/g, '%27').replace(/"/g, '%22')}') center/cover no-repeat` : art(seed);
 }
 const price = p => p.discount_price_inr || p.price_inr;
+/* A product priced at 0 is a free download: sign in, get the file, no checkout. */
+const isFree = p => !p.is_bundle && price(p) === 0;
+const priceLabel = p => isFree(p) ? 'Free' : money(price(p));
 const stars = n => '★★★★★'.slice(0, n) + '☆☆☆☆☆'.slice(0, 5 - n);
 
 function toast(msg, kind = '') {
@@ -139,11 +142,11 @@ function productCard(p) {
     <div class="card-body">
       <h3 data-act="open" data-id="${p.id}">${esc(p.title)}</h3>
       <p class="card-sub">${esc(p.short_description)}</p>
-      <div class="price">${money(price(p))}
+      <div class="price">${priceLabel(p)}
         ${p.discount_price_inr ? `<s>${money(p.price_inr)}</s><span class="off">Save ${money(p.price_inr - p.discount_price_inr)}</span>` : ''}
       </div>
       <div class="card-actions">
-        <button class="btn btn-primary" data-act="add" data-id="${p.id}">Add to cart</button>
+        ${isFree(p) ? `<button class="btn btn-primary" data-act="free" data-id="${p.id}">Get free download</button>` : `<button class="btn btn-primary" data-act="add" data-id="${p.id}">Add to cart</button>`}
         <button class="btn btn-ghost" data-act="open" data-id="${p.id}">Details</button>
       </div>
     </div>
@@ -388,12 +391,12 @@ pages.product = slug => {
         <ul class="spec-list">${p.specs.map(s => `<li>${esc(s)}</li>`).join('')}</ul>
         ${revs.length ? `<div class="stars">${stars(Math.round(revs.reduce((s, r) => s + r.rating, 0) / revs.length))} <span style="color:var(--muted);font-size:.85rem">${revs.length} review${revs.length > 1 ? 's' : ''}</span></div>` : ''}
         <div class="buy-box">
-          <div class="price">${money(price(p))}
+          <div class="price">${priceLabel(p)}
             ${p.discount_price_inr ? `<s>${money(p.price_inr)}</s><span class="off">Save ${money(p.price_inr - p.discount_price_inr)}</span>` : ''}
           </div>
           <div class="buy-row">
-            <button class="btn btn-primary" style="flex:1" data-act="buy" data-id="${p.id}">Buy now</button>
-            <button class="btn btn-ghost" style="flex:1" data-act="add" data-id="${p.id}">Add to cart</button>
+            ${isFree(p) ? `<button class="btn btn-primary" style="flex:1" data-act="free" data-id="${p.id}">Get free download</button>` : `<button class="btn btn-primary" style="flex:1" data-act="buy" data-id="${p.id}">Buy now</button>
+            <button class="btn btn-ghost" style="flex:1" data-act="add" data-id="${p.id}">Add to cart</button>`}
             <button class="icon-btn wish ${wished ? 'on' : ''}" style="position:static" data-wish="${p.id}" data-act="wish" data-id="${p.id}" aria-label="Save">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20s-7-4.4-7-9a4 4 0 0 1 7-2.6A4 4 0 0 1 19 11c0 4.6-7 9-7 9Z"/></svg>
             </button>
@@ -957,12 +960,12 @@ function search(term) {
   const out = $('#searchResults');
   if (!t) {
     out.innerHTML = DB.activeProducts().filter(p => p.is_bestseller).slice(0, 5)
-      .map(p => sres(p.id, p.title, 'Best seller · ' + money(price(p)), `#/product/${p.slug}`)).join('');
+      .map(p => sres(p.id, p.title, 'Best seller · ' + priceLabel(p), `#/product/${p.slug}`)).join('');
     return;
   }
   const hits = [
     ...DB.activeProducts().filter(p => (p.title + ' ' + p.short_description + ' ' + p.description).toLowerCase().includes(t))
-      .map(p => sres(p.id, p.title, ((DB.category(p.category_id) || {}).name || 'Product') + ' · ' + money(price(p)), `#/product/${p.slug}`)),
+      .map(p => sres(p.id, p.title, ((DB.category(p.category_id) || {}).name || 'Product') + ' · ' + priceLabel(p), `#/product/${p.slug}`)),
     ...DB.courses().filter(c => (c.title + ' ' + c.description).toLowerCase().includes(t))
       .map(c => sres(c.id, c.title, 'Course · ' + (c.type === 'free' ? 'Free' : money(c.price_inr)), `#/course/${c.slug}`)),
     ...DB.services().filter(s => (s.title + ' ' + s.description).toLowerCase().includes(t))
@@ -1147,6 +1150,16 @@ function wireGlobal() {
       enroll: () => enrol(id),
       tab: () => go('#/account?tab=' + id),
       certificate: () => certificate(id),
+      free: async () => {
+        if (!store.data.user) { openAuth(); toast('Sign in to get your free download'); return; }
+        try {
+          const res = await api('/api/downloads/' + id);
+          toast('Your free download is opening (link valid 15 minutes)', 'ok');
+          window.open(res.url, '_blank');
+        } catch (err) {
+          toast(err.message || 'Could not get the download link', 'err');
+        }
+      },
       download: async () => {
         try {
           const res = await api('/api/downloads/' + id);
